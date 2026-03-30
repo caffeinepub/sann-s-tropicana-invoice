@@ -1,16 +1,19 @@
 import type { Invoice } from "../backend.d";
 import { HOTEL } from "../constants/hotel";
-import { calcInvoice } from "../utils/calculations";
+import { calcInvoice, calcInvoiceMulti } from "../utils/calculations";
+import type { RoomEntry } from "../utils/calculations";
 import { numberToWords } from "../utils/numberToWords";
 
 interface InvoicePreviewProps {
   invoice: Partial<Invoice>;
   id?: string;
+  rooms?: RoomEntry[];
 }
 
 export default function InvoicePreview({
   invoice,
   id = "invoice-preview",
+  rooms,
 }: InvoicePreviewProps) {
   const {
     invoiceNumber = "INV-DRAFT",
@@ -33,18 +36,35 @@ export default function InvoicePreview({
     notes = "",
   } = invoice;
 
-  const calc = calcInvoice({
-    tariffPerNight,
-    checkIn,
-    checkOut,
-    includeBreakfast,
-    breakfastCharge,
-    isHourly,
-    hours,
-    hourlyRate,
-    discountValue,
-    discountType,
-  });
+  const hasMultipleRooms = rooms && rooms.length > 0;
+
+  const multiCalc = hasMultipleRooms
+    ? calcInvoiceMulti({
+        rooms,
+        checkIn: checkIn ?? "",
+        checkOut: checkOut ?? "",
+        isHourly: isHourly ?? false,
+        hours: hours ?? 0,
+        hourlyRate: hourlyRate ?? 0,
+        discountValue: discountValue ?? 0,
+        discountType: discountType ?? "rupees",
+      })
+    : null;
+
+  const calc = hasMultipleRooms
+    ? multiCalc!
+    : calcInvoice({
+        tariffPerNight,
+        checkIn: checkIn ?? "",
+        checkOut: checkOut ?? "",
+        includeBreakfast: includeBreakfast ?? false,
+        breakfastCharge: breakfastCharge ?? 0,
+        isHourly: isHourly ?? false,
+        hours: hours ?? 0,
+        hourlyRate: hourlyRate ?? 0,
+        discountValue: discountValue ?? 0,
+        discountType: discountType ?? "rupees",
+      });
 
   const formatCurrency = (n: number) =>
     new Intl.NumberFormat("en-IN", {
@@ -61,7 +81,6 @@ export default function InvoicePreview({
     });
   };
 
-  // Always use full tariff as room rate — breakfast is embedded in tariff, not shown separately
   const roomOnlyRate = tariffPerNight;
 
   return (
@@ -117,17 +136,23 @@ export default function InvoicePreview({
               </tr>
               <tr>
                 <td className="text-gray-500 pr-3">Invoice Date:</td>
-                <td className="font-semibold">{formatDate(invoiceDate)}</td>
+                <td className="font-semibold">
+                  {formatDate(invoiceDate ?? "")}
+                </td>
               </tr>
               {!isHourly && (
                 <>
                   <tr>
                     <td className="text-gray-500 pr-3">Check-in:</td>
-                    <td className="font-semibold">{formatDate(checkIn)}</td>
+                    <td className="font-semibold">
+                      {formatDate(checkIn ?? "")}
+                    </td>
                   </tr>
                   <tr>
                     <td className="text-gray-500 pr-3">Check-out:</td>
-                    <td className="font-semibold">{formatDate(checkOut)}</td>
+                    <td className="font-semibold">
+                      {formatDate(checkOut ?? "")}
+                    </td>
                   </tr>
                   <tr>
                     <td className="text-gray-500 pr-3">Nights:</td>
@@ -183,29 +208,51 @@ export default function InvoicePreview({
           </tr>
         </thead>
         <tbody>
-          <tr className="border-b border-gray-200">
-            <td className="py-2.5 px-3">1</td>
-            <td className="py-2.5 px-3">
-              {roomCategory} {roomNumber ? `(Room No: ${roomNumber})` : ""}
-              {isHourly && " \u2014 Hourly Basis"}
-            </td>
-            <td className="py-2.5 px-3 text-center">996311</td>
-            <td className="py-2.5 px-3 text-right">
-              {formatCurrency(
-                isHourly ? hourlyRate / 1.05 : roomOnlyRate / 1.05,
-              )}
-            </td>
-            <td className="py-2.5 px-3 text-right">
-              {isHourly ? hours : calc.nights}
-            </td>
-            <td className="py-2.5 px-3 text-right font-medium">
-              {formatCurrency(
-                isHourly
-                  ? calc.roomAmount / 1.05
-                  : (roomOnlyRate / 1.05) * calc.nights,
-              )}
-            </td>
-          </tr>
+          {hasMultipleRooms && multiCalc ? (
+            multiCalc.roomBreakdown.map((room, idx) => (
+              <tr key={room.roomNumber} className="border-b border-gray-200">
+                <td className="py-2.5 px-3">{idx + 1}</td>
+                <td className="py-2.5 px-3">
+                  {room.roomCategory} (Room No: {room.roomNumber})
+                  {isHourly && " \u2014 Hourly Basis"}
+                </td>
+                <td className="py-2.5 px-3 text-center">996311</td>
+                <td className="py-2.5 px-3 text-right">
+                  {formatCurrency(room.baseRatePerNight)}
+                </td>
+                <td className="py-2.5 px-3 text-right">
+                  {isHourly ? hours : calc.nights}
+                </td>
+                <td className="py-2.5 px-3 text-right font-medium">
+                  {formatCurrency(room.lineTotal)}
+                </td>
+              </tr>
+            ))
+          ) : (
+            <tr className="border-b border-gray-200">
+              <td className="py-2.5 px-3">1</td>
+              <td className="py-2.5 px-3">
+                {roomCategory} {roomNumber ? `(Room No: ${roomNumber})` : ""}
+                {isHourly && " \u2014 Hourly Basis"}
+              </td>
+              <td className="py-2.5 px-3 text-center">996311</td>
+              <td className="py-2.5 px-3 text-right">
+                {formatCurrency(
+                  isHourly ? (hourlyRate ?? 0) / 1.05 : roomOnlyRate / 1.05,
+                )}
+              </td>
+              <td className="py-2.5 px-3 text-right">
+                {isHourly ? hours : calc.nights}
+              </td>
+              <td className="py-2.5 px-3 text-right font-medium">
+                {formatCurrency(
+                  isHourly
+                    ? calc.roomAmount / 1.05
+                    : (roomOnlyRate / 1.05) * calc.nights,
+                )}
+              </td>
+            </tr>
+          )}
         </tbody>
       </table>
 

@@ -3,13 +3,6 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -20,23 +13,25 @@ import {
   Eye,
   EyeOff,
   HelpCircle,
+  Plus,
   Printer,
   Save,
   Sun,
+  Trash2,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import type { Invoice } from "../backend.d";
 import InvoicePreview from "../components/InvoicePreview";
 import type { Page } from "../components/Sidebar";
-import { ROOM_CATEGORIES, ROOM_CODE_MAP, ROOM_RATES } from "../constants/hotel";
+import { ROOM_CODE_MAP, ROOM_RATES } from "../constants/hotel";
 import {
   useCreateInvoice,
   useGetInvoice,
-  useNextInvoiceNumber,
   useUpdateInvoice,
 } from "../hooks/useQueries";
-import { calcInvoice } from "../utils/calculations";
+import { calcInvoiceMulti } from "../utils/calculations";
+import type { RoomEntry } from "../utils/calculations";
 import { exportInvoiceToPDF } from "../utils/pdfExport";
 
 interface InvoiceFormProps {
@@ -62,7 +57,56 @@ function peekLocalInvoiceNumber(): string {
   return String(last + 1);
 }
 
-const DEFAULT_CATEGORY = "Deluxe Double";
+function parseRoomsFromString(
+  roomNumberStr: string,
+  includeBreakfast: boolean,
+): RoomEntry[] {
+  const codes = roomNumberStr
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const entries: RoomEntry[] = [];
+  for (const code of codes) {
+    const cat = ROOM_CODE_MAP[code];
+    if (cat) {
+      const rates = ROOM_RATES[cat];
+      const tariff = includeBreakfast
+        ? rates.withBreakfast
+        : rates.withoutBreakfast;
+      const breakfast = includeBreakfast
+        ? rates.withBreakfast - rates.withoutBreakfast
+        : 0;
+      entries.push({
+        roomNumber: code,
+        roomCategory: cat,
+        tariffPerNight: tariff,
+        breakfastCharge: breakfast,
+      });
+    } else if (code) {
+      // Unknown code — add as-is with 0 tariff (fallback)
+      entries.push({
+        roomNumber: code,
+        roomCategory: "Unknown",
+        tariffPerNight: 0,
+        breakfastCharge: 0,
+      });
+    }
+  }
+  return entries.length > 0
+    ? entries
+    : [
+        {
+          roomNumber: "",
+          roomCategory: "",
+          tariffPerNight: 0,
+          breakfastCharge: 0,
+        },
+      ];
+}
+
+const EMPTY_ROOMS: RoomEntry[] = [
+  { roomNumber: "", roomCategory: "", tariffPerNight: 0, breakfastCharge: 0 },
+];
 
 const EMPTY_FORM = {
   guestName: "",
@@ -70,11 +114,7 @@ const EMPTY_FORM = {
   guestGST: "",
   checkIn: "",
   checkOut: "",
-  roomCategory: DEFAULT_CATEGORY as string,
-  roomNumber: "",
-  tariffPerNight: ROOM_RATES[DEFAULT_CATEGORY].withoutBreakfast,
   includeBreakfast: false,
-  breakfastCharge: 0,
   isHourly: false,
   hours: 1,
   hourlyRate: 0,
@@ -93,31 +133,31 @@ export default function InvoiceForm({ onNavigate, params }: InvoiceFormProps) {
       : undefined;
   const readOnly = !!isView;
 
-  const { data: nextNumber } = useNextInvoiceNumber();
   const { data: existingInvoice } = useGetInvoice(existingInvoiceNumber || "");
   const createInvoice = useCreateInvoice();
   const updateInvoice = useUpdateInvoice();
 
   const [form, setForm] = useState(EMPTY_FORM);
+  const [rooms, setRooms] = useState<RoomEntry[]>(EMPTY_ROOMS);
   const [invoiceNumber, setInvoiceNumber] = useState("");
   const [showPreview, setShowPreview] = useState(true);
   const [isExporting, setIsExporting] = useState(false);
-  const [roomCodeInput, setRoomCodeInput] = useState("");
   const [numberAllocated, setNumberAllocated] = useState(false);
+  // Add room input state
+  const [addRoomInput, setAddRoomInput] = useState("");
+  const [addRoomError, setAddRoomError] = useState("");
+  const addInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (existingInvoice) {
+      const bf = existingInvoice.includeBreakfast;
       setForm({
         guestName: existingInvoice.guestName,
         guestAddress: existingInvoice.guestAddress,
         guestGST: existingInvoice.guestGST,
         checkIn: existingInvoice.checkIn,
         checkOut: existingInvoice.checkOut,
-        roomCategory: existingInvoice.roomCategory,
-        roomNumber: existingInvoice.roomNumber,
-        tariffPerNight: existingInvoice.tariffPerNight,
-        includeBreakfast: existingInvoice.includeBreakfast,
-        breakfastCharge: existingInvoice.breakfastCharge,
+        includeBreakfast: bf,
         isHourly: existingInvoice.isHourly,
         hours: existingInvoice.hours,
         hourlyRate: existingInvoice.hourlyRate,
@@ -125,102 +165,107 @@ export default function InvoiceForm({ onNavigate, params }: InvoiceFormProps) {
         discountType: existingInvoice.discountType,
         notes: existingInvoice.notes,
       });
-      setRoomCodeInput(existingInvoice.roomNumber);
+      setRooms(parseRoomsFromString(existingInvoice.roomNumber, bf));
       setInvoiceNumber(existingInvoice.invoiceNumber);
     } else if (!isEdit && !isView) {
       const localNum = peekLocalInvoiceNumber();
-      setInvoiceNumber(nextNumber || localNum);
-    } else if (nextNumber && !existingInvoice) {
-      setInvoiceNumber(nextNumber);
+      setInvoiceNumber(localNum);
     }
-  }, [existingInvoice, nextNumber, isEdit, isView]);
+  }, [existingInvoice, isEdit, isView]);
 
   const today = new Date().toISOString().split("T")[0];
+  const invoiceDate = form.checkOut || today;
 
   const setField = <K extends keyof typeof EMPTY_FORM>(
     key: K,
     value: (typeof EMPTY_FORM)[K],
   ) => setForm((prev) => ({ ...prev, [key]: value }));
 
-  // Room code validation
-  const resolvedCategory = roomCodeInput
-    ? ROOM_CODE_MAP[roomCodeInput]
-    : undefined;
-  const isValidCode = !!resolvedCategory;
+  // Breakfast toggle — update all rooms
+  const handleBreakfastToggle = (val: boolean) => {
+    setForm((prev) => ({ ...prev, includeBreakfast: val }));
+    setRooms((prev) =>
+      prev.map((room) => {
+        const cat = ROOM_CODE_MAP[room.roomNumber];
+        if (cat) {
+          const rates = ROOM_RATES[cat];
+          return {
+            ...room,
+            tariffPerNight: val ? rates.withBreakfast : rates.withoutBreakfast,
+            breakfastCharge: val
+              ? rates.withBreakfast - rates.withoutBreakfast
+              : 0,
+          };
+        }
+        return room;
+      }),
+    );
+  };
+
+  // Resolve add room input
+  const addRoomCode = addRoomInput.trim();
+  const addRoomCategory = ROOM_CODE_MAP[addRoomCode];
+  const isAddRoomValid = !!addRoomCategory;
   const validCodes = Object.keys(ROOM_CODE_MAP).sort();
 
-  const handleRoomCodeChange = (code: string) => {
-    setRoomCodeInput(code);
+  const handleAddRoom = () => {
+    const code = addRoomInput.trim();
+    if (!code) return;
     const cat = ROOM_CODE_MAP[code];
-    if (cat) {
-      setForm((prev) => {
-        const rate = ROOM_RATES[cat];
-        const tariff = prev.includeBreakfast
-          ? rate.withBreakfast
-          : rate.withoutBreakfast;
-        const breakfast = prev.includeBreakfast
-          ? rate.withBreakfast - rate.withoutBreakfast
-          : 0;
-        return {
-          ...prev,
-          roomCategory: cat,
-          roomNumber: code,
-          tariffPerNight: tariff,
-          breakfastCharge: breakfast,
-        };
-      });
-    } else {
-      setForm((prev) => ({ ...prev, roomNumber: code }));
+    if (!cat) {
+      setAddRoomError(`"${code}" is not a valid room number.`);
+      return;
     }
+    if (rooms.some((r) => r.roomNumber === code)) {
+      setAddRoomError(`Room ${code} is already added.`);
+      return;
+    }
+    const rates = ROOM_RATES[cat];
+    const tariff = form.includeBreakfast
+      ? rates.withBreakfast
+      : rates.withoutBreakfast;
+    const breakfast = form.includeBreakfast
+      ? rates.withBreakfast - rates.withoutBreakfast
+      : 0;
+    const newRoom: RoomEntry = {
+      roomNumber: code,
+      roomCategory: cat,
+      tariffPerNight: tariff,
+      breakfastCharge: breakfast,
+    };
+    setRooms((prev) => {
+      // Remove any empty placeholder rooms
+      const filtered = prev.filter((r) => r.roomNumber !== "");
+      return [...filtered, newRoom];
+    });
+    setAddRoomInput("");
+    setAddRoomError("");
+    addInputRef.current?.focus();
   };
 
-  const handleBreakfastToggle = (val: boolean) => {
-    setForm((prev) => {
-      const cat = prev.roomCategory as keyof typeof ROOM_RATES;
-      const rates = ROOM_RATES[cat];
-      if (rates) {
-        const tariff = val ? rates.withBreakfast : rates.withoutBreakfast;
-        const breakfast = val
-          ? rates.withBreakfast - rates.withoutBreakfast
-          : 0;
-        return {
-          ...prev,
-          includeBreakfast: val,
-          tariffPerNight: tariff,
-          breakfastCharge: breakfast,
-        };
+  const handleRemoveRoom = (roomNumber: string) => {
+    setRooms((prev) => {
+      const filtered = prev.filter((r) => r.roomNumber !== roomNumber);
+      if (filtered.length === 0) {
+        return [
+          {
+            roomNumber: "",
+            roomCategory: "",
+            tariffPerNight: 0,
+            breakfastCharge: 0,
+          },
+        ];
       }
-      return { ...prev, includeBreakfast: val };
+      return filtered;
     });
   };
 
-  const handleCategoryChange = (cat: string) => {
-    setForm((prev) => {
-      const rates = ROOM_RATES[cat as keyof typeof ROOM_RATES];
-      if (rates) {
-        const tariff = prev.includeBreakfast
-          ? rates.withBreakfast
-          : rates.withoutBreakfast;
-        const breakfast = prev.includeBreakfast
-          ? rates.withBreakfast - rates.withoutBreakfast
-          : 0;
-        return {
-          ...prev,
-          roomCategory: cat,
-          tariffPerNight: tariff,
-          breakfastCharge: breakfast,
-        };
-      }
-      return { ...prev, roomCategory: cat };
-    });
-  };
+  const validRooms = rooms.filter((r) => r.roomNumber !== "");
 
-  const calc = calcInvoice({
-    tariffPerNight: form.tariffPerNight,
+  const calc = calcInvoiceMulti({
+    rooms: validRooms.length > 0 ? validRooms : rooms,
     checkIn: form.checkIn,
     checkOut: form.checkOut,
-    includeBreakfast: form.includeBreakfast,
-    breakfastCharge: form.breakfastCharge,
     isHourly: form.isHourly,
     hours: form.hours,
     hourlyRate: form.hourlyRate,
@@ -228,10 +273,31 @@ export default function InvoiceForm({ onNavigate, params }: InvoiceFormProps) {
     discountType: form.discountType,
   });
 
+  // Build the combined room fields for the Invoice object (backend-compatible)
+  const combinedRoomNumber = validRooms.map((r) => r.roomNumber).join(", ");
+  const combinedRoomCategory =
+    validRooms.length === 1
+      ? validRooms[0].roomCategory
+      : validRooms.length > 1
+        ? "Multiple Rooms"
+        : rooms[0]?.roomCategory || "";
+  const combinedTariff = validRooms.reduce(
+    (sum, r) => sum + r.tariffPerNight,
+    0,
+  );
+  const combinedBreakfastCharge = validRooms.reduce(
+    (sum, r) => sum + r.breakfastCharge,
+    0,
+  );
+
   const previewInvoice: Partial<Invoice> = {
     ...form,
+    roomNumber: combinedRoomNumber,
+    roomCategory: combinedRoomCategory,
+    tariffPerNight: combinedTariff,
+    breakfastCharge: combinedBreakfastCharge,
     invoiceNumber,
-    invoiceDate: today,
+    invoiceDate: invoiceDate,
     nights: BigInt(Math.round(calc.nights)),
     roomAmount: calc.roomAmount,
     breakfastAmount: calc.breakfastAmount,
@@ -243,8 +309,12 @@ export default function InvoiceForm({ onNavigate, params }: InvoiceFormProps) {
   };
 
   const handleSave = async () => {
-    if (!form.guestName || !form.roomNumber) {
-      toast.error("Please fill in all required fields");
+    if (!form.guestName) {
+      toast.error("Please fill in guest name");
+      return;
+    }
+    if (validRooms.length === 0) {
+      toast.error("Please add at least one room");
       return;
     }
     if (!form.isHourly && (!form.checkIn || !form.checkOut)) {
@@ -261,8 +331,12 @@ export default function InvoiceForm({ onNavigate, params }: InvoiceFormProps) {
 
     const invoice: Invoice = {
       ...form,
+      roomNumber: combinedRoomNumber,
+      roomCategory: combinedRoomCategory,
+      tariffPerNight: combinedTariff,
+      breakfastCharge: combinedBreakfastCharge,
       invoiceNumber: finalInvoiceNumber,
-      invoiceDate: today,
+      invoiceDate: invoiceDate,
       createdAt: BigInt(Date.now()),
       nights: BigInt(Math.round(calc.nights)),
       roomAmount: calc.roomAmount,
@@ -302,8 +376,10 @@ export default function InvoiceForm({ onNavigate, params }: InvoiceFormProps) {
     }
   };
 
-  const ratesForCategory = form.roomCategory
-    ? ROOM_RATES[form.roomCategory as keyof typeof ROOM_RATES]
+  // Representative category for breakfast rate display (first valid room)
+  const firstValidRoom = validRooms[0];
+  const ratesForDisplay = firstValidRoom
+    ? ROOM_RATES[firstValidRoom.roomCategory as keyof typeof ROOM_RATES]
     : null;
 
   return (
@@ -433,7 +509,7 @@ export default function InvoiceForm({ onNavigate, params }: InvoiceFormProps) {
               </CardContent>
             </Card>
 
-            {/* Billing Type -- PROMINENT SECTION */}
+            {/* Billing Type */}
             <Card className="shadow-card border-2 border-blue-200 bg-blue-50/40">
               <CardHeader className="pb-3">
                 <CardTitle className="text-sm font-semibold text-blue-700">
@@ -441,7 +517,6 @@ export default function InvoiceForm({ onNavigate, params }: InvoiceFormProps) {
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-3">
-                {/* Day / Hourly buttons */}
                 <div className="grid grid-cols-2 gap-3">
                   <button
                     type="button"
@@ -477,7 +552,6 @@ export default function InvoiceForm({ onNavigate, params }: InvoiceFormProps) {
                   </button>
                 </div>
 
-                {/* Breakfast toggle -- only for Day Basis */}
                 {!form.isHourly && (
                   <div className="grid grid-cols-2 gap-3">
                     <button
@@ -493,15 +567,6 @@ export default function InvoiceForm({ onNavigate, params }: InvoiceFormProps) {
                       <span className="text-xs font-bold">
                         Without Breakfast
                       </span>
-                      {ratesForCategory && (
-                        <span className="text-[11px] opacity-90">
-                          ₹
-                          {ratesForCategory.withoutBreakfast.toLocaleString(
-                            "en-IN",
-                          )}
-                          /night
-                        </span>
-                      )}
                     </button>
                     <button
                       type="button"
@@ -515,21 +580,14 @@ export default function InvoiceForm({ onNavigate, params }: InvoiceFormProps) {
                     >
                       <Coffee className="w-4 h-4" />
                       <span className="text-xs font-bold">With Breakfast</span>
-                      {ratesForCategory && (
+                      {ratesForDisplay && (
                         <span className="text-[11px] opacity-90">
-                          ₹
-                          {ratesForCategory.withBreakfast.toLocaleString(
-                            "en-IN",
-                          )}
-                          /night
-                          <span className="ml-1 font-normal">
-                            (+₹
-                            {(
-                              ratesForCategory.withBreakfast -
-                              ratesForCategory.withoutBreakfast
-                            ).toLocaleString("en-IN")}
-                            )
-                          </span>
+                          +₹
+                          {(
+                            ratesForDisplay.withBreakfast -
+                            ratesForDisplay.withoutBreakfast
+                          ).toLocaleString("en-IN")}
+                          /room/night
                         </span>
                       )}
                     </button>
@@ -545,7 +603,7 @@ export default function InvoiceForm({ onNavigate, params }: InvoiceFormProps) {
                   Stay Details
                 </CardTitle>
               </CardHeader>
-              <CardContent className="space-y-3">
+              <CardContent className="space-y-4">
                 {!form.isHourly && (
                   <div className="grid grid-cols-2 gap-3">
                     <div>
@@ -621,100 +679,115 @@ export default function InvoiceForm({ onNavigate, params }: InvoiceFormProps) {
                   </div>
                 )}
 
-                {/* Room code */}
+                {/* ── MULTI-ROOM SELECTION ── */}
                 <div>
-                  <Label className="text-xs">
-                    Room Number <span className="text-destructive">*</span>
-                  </Label>
-                  <div className="mt-1 flex items-center gap-2">
-                    <Input
-                      value={roomCodeInput}
-                      onChange={(e) => handleRoomCodeChange(e.target.value)}
-                      placeholder="e.g. 601, 603, 609"
-                      className="h-9 text-sm"
-                      data-ocid="invoice_form.room_input"
-                    />
-                    {roomCodeInput && (
-                      <Badge
-                        className={`whitespace-nowrap shrink-0 ${
-                          isValidCode
-                            ? "bg-blue-100 text-blue-800 border-blue-200"
-                            : "bg-red-100 text-red-800 border-red-200"
-                        }`}
-                        variant="outline"
-                      >
-                        {isValidCode ? `✓ ${resolvedCategory}` : "✗ Invalid"}
-                      </Badge>
+                  <div className="flex items-center justify-between mb-2">
+                    <Label className="text-xs font-semibold">
+                      Room Selection <span className="text-destructive">*</span>
+                    </Label>
+                    {validRooms.length > 0 && (
+                      <span className="text-[11px] text-blue-600 font-medium bg-blue-50 px-2 py-0.5 rounded-full">
+                        {validRooms.length} room
+                        {validRooms.length > 1 ? "s" : ""} selected
+                      </span>
                     )}
                   </div>
-                  {roomCodeInput && !isValidCode && (
+
+                  {/* Room list */}
+                  {validRooms.length > 0 && (
+                    <div className="mb-3 space-y-1.5">
+                      {validRooms.map((room, idx) => (
+                        <div
+                          key={room.roomNumber}
+                          className="flex items-center gap-2 px-3 py-2 bg-blue-50 border border-blue-100 rounded-lg"
+                          data-ocid={`invoice_form.item.${idx + 1}`}
+                        >
+                          <span className="inline-flex items-center justify-center h-5 w-8 rounded bg-blue-600 text-white text-[11px] font-bold shrink-0">
+                            {room.roomNumber}
+                          </span>
+                          <span className="flex-1 text-xs text-gray-700 font-medium">
+                            {room.roomCategory}
+                          </span>
+                          <span className="text-xs text-gray-500">
+                            ₹{room.tariffPerNight.toLocaleString("en-IN")}/night
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveRoom(room.roomNumber)}
+                            className="ml-1 p-1 text-red-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors"
+                            title="Remove room"
+                            data-ocid={`invoice_form.delete_button.${idx + 1}`}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Add room input */}
+                  <div className="flex gap-2">
+                    <div className="relative flex-1">
+                      <Input
+                        ref={addInputRef}
+                        value={addRoomInput}
+                        onChange={(e) => {
+                          setAddRoomInput(e.target.value);
+                          setAddRoomError("");
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            handleAddRoom();
+                          }
+                        }}
+                        placeholder="Type room number (e.g. 601)"
+                        className="h-9 text-sm pr-20"
+                        data-ocid="invoice_form.room_input"
+                      />
+                      {addRoomCode && (
+                        <span
+                          className={`absolute right-2 top-1/2 -translate-y-1/2 text-[10px] font-semibold px-1.5 py-0.5 rounded ${
+                            isAddRoomValid
+                              ? "bg-green-100 text-green-700"
+                              : "bg-red-100 text-red-600"
+                          }`}
+                        >
+                          {isAddRoomValid ? addRoomCategory : "Invalid"}
+                        </span>
+                      )}
+                    </div>
+                    <Button
+                      type="button"
+                      size="sm"
+                      onClick={handleAddRoom}
+                      disabled={!addRoomCode}
+                      className="h-9 px-3 gap-1 bg-blue-600 hover:bg-blue-700 text-white"
+                      data-ocid="invoice_form.primary_button"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      Add
+                    </Button>
+                  </div>
+
+                  {addRoomError && (
                     <div className="mt-2 p-2 bg-red-50 border border-red-200 rounded-md">
-                      <p className="text-xs text-red-700 font-medium mb-1">
-                        Valid room codes:
-                      </p>
-                      <p className="text-xs text-red-600 leading-relaxed">
-                        {validCodes.join(" · ")}
+                      <p className="text-xs text-red-700">{addRoomError}</p>
+                      <p className="text-xs text-red-500 mt-0.5">
+                        Valid codes: {validCodes.join(" · ")}
                       </p>
                     </div>
                   )}
+                  <p className="text-[11px] text-gray-400 mt-1.5">
+                    Add multiple rooms for a single guest invoice. Press Enter
+                    or click Add.
+                  </p>
                 </div>
 
-                {/* Room Category */}
-                <div>
-                  <Label className="text-xs">Room Category</Label>
-                  <Select
-                    value={form.roomCategory}
-                    onValueChange={handleCategoryChange}
-                  >
-                    <SelectTrigger
-                      className="mt-1 h-9 text-sm"
-                      data-ocid="invoice_form.select"
-                    >
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {ROOM_CATEGORIES.map((r) => (
-                        <SelectItem key={r} value={r}>
-                          {r}
-                          {ROOM_RATES[r] && (
-                            <span className="text-muted-foreground ml-2">
-                              ₹
-                              {ROOM_RATES[r].withoutBreakfast.toLocaleString(
-                                "en-IN",
-                              )}
-                            </span>
-                          )}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                {/* Tariff */}
-                {!form.isHourly && (
-                  <div>
-                    <div className="flex items-center gap-1">
-                      <Label className="text-xs">
-                        Tariff per Night (₹, incl. GST)
-                      </Label>
-                      <HelpCircle className="w-3 h-3 text-muted-foreground" />
-                    </div>
-                    <Input
-                      type="number"
-                      value={form.tariffPerNight || ""}
-                      onChange={(e) =>
-                        setField(
-                          "tariffPerNight",
-                          Number.parseFloat(e.target.value) || 0,
-                        )
-                      }
-                      placeholder="0.00"
-                      className="mt-1 h-9 text-sm"
-                      data-ocid="invoice_form.tariff_input"
-                    />
-                    <p className="text-[11px] italic text-gray-400 mt-1">
-                      Tariff includes 5% GST (2.5% SGST + 2.5% CGST)
-                    </p>
+                {/* Tariff note */}
+                {!form.isHourly && validRooms.length > 0 && (
+                  <div className="text-[11px] italic text-gray-400">
+                    Tariffs include 5% GST (2.5% SGST + 2.5% CGST)
                   </div>
                 )}
               </CardContent>
@@ -804,6 +877,27 @@ export default function InvoiceForm({ onNavigate, params }: InvoiceFormProps) {
                       </span>
                     </div>
                   )}
+                  {validRooms.length > 1 && !form.isHourly && (
+                    <div className="space-y-0.5">
+                      {validRooms.map((r) => (
+                        <div
+                          key={r.roomNumber}
+                          className="flex justify-between text-xs text-muted-foreground pl-2 border-l-2 border-blue-200"
+                        >
+                          <span>
+                            Room {r.roomNumber} ({r.roomCategory})
+                          </span>
+                          <span>
+                            ₹{r.tariffPerNight.toLocaleString("en-IN")} ×{" "}
+                            {calc.nights} = ₹
+                            {(r.tariffPerNight * calc.nights).toLocaleString(
+                              "en-IN",
+                            )}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                   <div className="flex justify-between text-muted-foreground">
                     <span>Tariff Total (incl. GST)</span>
                     <span className="font-medium text-foreground">
@@ -874,6 +968,7 @@ export default function InvoiceForm({ onNavigate, params }: InvoiceFormProps) {
               <InvoicePreview
                 invoice={previewInvoice}
                 id="invoice-preview-print"
+                rooms={validRooms.length > 0 ? validRooms : undefined}
               />
             </div>
           </div>
