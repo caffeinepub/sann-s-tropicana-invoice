@@ -1,0 +1,108 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@font-face {
+  font-family: "Plus Jakarta Sans";
+  src: url("/assets/fonts/PlusJakartaSans.woff2") format("woff2");
+  font-weight: 300 700;
+  font-display: swap;
+}
+
+@layer base {
+  :root {
+    --radius: 0.5rem;
+    /* Navy sidebar */
+    --sidebar: 0.27 0.056 237;
+    --sidebar-foreground: 0.95 0.006 237;
+    --sidebar-primary: 0.55 0.18 240;
+    --sidebar-primary-foreground: 1 0 0;
+    --sidebar-accent: 0.33 0.06 237;
+    --sidebar-accent-foreground: 0.95 0 0;
+    --sidebar-border: 0.32 0.05 237;
+    --sidebar-ring: 0.55 0.18 240;
+    /* Main area */
+    --background: 0.97 0.006 237;
+    --foreground: 0.22 0.016 254;
+    --card: 1 0 0;
+    --card-foreground: 0.22 0.016 254;
+    --popover: 1 0 0;
+    --popover-foreground: 0.22 0.016 254;
+    /* Teal primary */
+    --primary: 0.55 0.18 240;
+    --primary-foreground: 1 0 0;
+    --secondary: 0.95 0.008 237;
+    --secondary-foreground: 0.27 0.05 237;
+    --muted: 0.94 0.006 237;
+    --muted-foreground: 0.53 0.01 254;
+    --accent: 0.93 0.04 240;
+    --accent-foreground: 0.35 0.15 240;
+    --destructive: 0.58 0.22 27;
+    --destructive-foreground: 1 0 0;
+    --border: 0.9 0.008 237;
+    --input: 0.92 0.008 237;
+    --ring: 0.55 0.18 240;
+    --chart-1: 0.55 0.18 240;
+    --chart-2: 0.62 0.15 151;
+    --chart-3: 0.68 0.15 55;
+    --chart-4: 0.27 0.056 237;
+    --chart-5: 0.7 0.1 191;
+    /* Status colors */
+    --status-paid-bg: 0.95 0.06 151;
+    --status-paid-text: 0.42 0.15 151;
+    --status-pending-bg: 0.95 0.07 55;
+    --status-pending-text: 0.52 0.15 55;
+  }
+
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground font-sans;
+    -webkit-font-smoothing: antialiased;
+  }
+}
+
+@layer utilities {
+  .invoice-print-area {
+    background: white;
+    color: #1a1a1a;
+  }
+}
+
+@media print {
+  .no-print {
+    display: none !important;
+  }
+  .print-full {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+  }
+  body {
+    background: white !important;
+  }
+}
+
+@media print {
+  @page {
+    size: A4;
+    margin: 10mm;
+  }
+  body * {
+    visibility: hidden;
+  }
+  #invoice-preview-print,
+  #invoice-preview-print * {
+    visibility: visible;
+  }
+  #invoice-preview-print {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 210mm;
+    min-height: 297mm;
+    padding: 10mm;
+    font-size: 11pt;
+  }
+}
